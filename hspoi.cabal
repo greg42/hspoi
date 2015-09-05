@@ -19,6 +19,6 @@ executable hspoi
   main-is:             POIWarner.hs
   -- other-modules:       
   -- other-extensions:    
-  build-depends:       base >=4.7 && <4.8, hsgps >=0.1, cassava, monad-loops, bytestring, vector, stm
+  build-depends:       base >=4.7 && <4.8, hsgps >=0.1, cassava, monad-loops, bytestring, vector, stm, process, MissingH
   -- hs-source-dirs:      
   default-language:    Haskell2010

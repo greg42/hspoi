@@ -26,6 +26,9 @@ import qualified Data.Vector as V
 import           Control.Applicative
 import           Data.List
 import           Data.Maybe
+import           System.Process
+import           Data.String.Utils
+import           Control.Exception
 
 -- | A POI
 data POI = POI {
@@ -175,7 +178,10 @@ doAnnouncement poi announceDist commandTemplate =
 
 -- | Performs the necessary IO for issuing a POI warning
 outputWarning :: POI -> Int -> String -> IO ()
-outputWarning poi distance commendTemplate = do
+outputWarning poi distance commandTemplate = do
+   let cmd' = replace "%d" (show distance) commandTemplate 
+       cmd  = replace "%s" (poiDescription poi) cmd'
+   _ <- try $ callCommand cmd  :: IO (Either SomeException ())
    return ()
 
 main :: IO ()
