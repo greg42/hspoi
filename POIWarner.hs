@@ -80,7 +80,10 @@ gpsDistance pos1 pos2 =
 databaseUpdateThread :: String -> GPSContext -> Double -> TVar [POI] -> IO ()
 databaseUpdateThread filename ctx distance tv = forever $ do
    curPos <- pos ctx
-   scanDatabase filename curPos distance tv
+   result <- try $ scanDatabase filename curPos distance tv :: IO (Either SomeException ())
+   case result of
+      Left err -> hPutStrLn stderr $ show err
+      Right _  -> return ()
    threadDelay $ 1000000 * 60 -- Updating once a minute is enough.
 
 -- | Scans an IGO8 database and appends all POIs found to a list of POIs in 
