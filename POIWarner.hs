@@ -194,6 +194,10 @@ main = do
    args <- getArgs
    when (length args < 4) $ do
       hPutStrLn stderr "Usage: POIWarner gpsd_host gpsd_port warn_command database1 ..."
+      hPutStrLn stderr "When you approach a POI, warn_command is passed to the shell."
+      hPutStrLn stderr "Any occurrence of %d is replaced by the distance to the POI"
+      hPutStrLn stderr "and %s is replaced by the description of the POI."
+      hPutStrLn stderr "Example: POIWarner 127.0.0.1 2947 'echo POI %s in %d' poi1.csv poi2.csv"
       exitFailure
    gps <- initGps (args !! 0) (read $ args !! 1)
    waitForFix gps
