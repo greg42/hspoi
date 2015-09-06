@@ -48,7 +48,7 @@ mkPOI pos desc = POI {
     poiPosition     = pos
   , poiDescription  = desc
   , poiLastDistance = radiusHotPOIs
-  , poiAnnouncedAt  = radiusHotPOIs
+  , poiAnnouncedAt  = round $ radiusHotPOIs
  }
 
 -- | How far may a POI be so that we preload it from a CSV for further
@@ -162,13 +162,15 @@ announce :: POI -> GPSContext -> String -> IO POI
 announce poi ctx commandTemplate = do
    let distance = poiLastDistance poi
    spd <- speed ctx
-   if (distance <= 1000 && spd >= 22) 
-      then doAnnouncement poi 1000 commandTemplate
-      else if (distance <= 500) 
-            then doAnnouncement poi 500 commandTemplate
-            else if (distance <= 100) 
-                  then doAnnouncement poi 100 commandTemplate
-                  else return poi
+   if distance <= 100
+      then doAnnouncement poi 100 commandTemplate
+      else if (distance <= 300) 
+            then doAnnouncement poi 300 commandTemplate
+            else if (distance <= 500) 
+                  then doAnnouncement poi 500 commandTemplate
+                  else if (distance <= 1000 && spd >= 22)
+                        then doAnnouncement poi 1000 commandTemplate
+                        else return poi
 
 -- | Checks if the poi has already be announced and if it hasn't then
 -- we issue an announcement.
