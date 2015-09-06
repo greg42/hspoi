@@ -22,11 +22,12 @@ import           Control.Concurrent.STM
 import           Control.Concurrent.STM.TVar
 import qualified Data.ByteString.Char8 as C8
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString as BS
 import qualified Data.Vector as V
 import           Control.Applicative
 import           Data.List
 import           Data.Maybe
-import           System.Process
+import           System.Cmd
 import           Data.String.Utils
 import           Control.Exception
 
@@ -93,7 +94,7 @@ scanDatabase filename curpos distance tv = do
    handle <- openFile filename ReadMode
    hGetLine handle -- Skip header
    whileM (not <$> hIsEOF handle) $ do
-      line <- BL.fromStrict <$> C8.hGetLine handle
+      line <- (BL.pack . BS.unpack) <$> C8.hGetLine handle
       let dec = decode NoHeader line 
       case dec of
          Left err -> return () -- Should we do something here?
@@ -186,7 +187,7 @@ outputWarning :: POI -> Int -> String -> IO ()
 outputWarning poi distance commandTemplate = do
    let cmd' = replace "%d" (show distance) commandTemplate 
        cmd  = replace "%s" (poiDescription poi) cmd'
-   _ <- try $ callCommand cmd  :: IO (Either SomeException ())
+   _ <- try $ system cmd :: IO (Either SomeException ExitCode)
    return ()
 
 main :: IO ()
