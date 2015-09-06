@@ -47,8 +47,8 @@ mkPOI :: GPSPosition -> String -> POI
 mkPOI pos desc = POI { 
     poiPosition     = pos
   , poiDescription  = desc
-  , poiLastDistance = 100000
-  , poiAnnouncedAt  = 100000
+  , poiLastDistance = radiusHotPOIs
+  , poiAnnouncedAt  = radiusHotPOIs
  }
 
 -- | How far may a POI be so that we preload it from a CSV for further
