@@ -30,6 +30,7 @@ import           Data.Maybe
 import           System.Cmd
 import           Data.String.Utils
 import           Control.Exception
+import           Database.SQLite.Simple
 
 -- | A POI
 data POI = POI {
@@ -77,15 +78,28 @@ gpsDistance pos1 pos2 =
         c = 2 * atan2 (sqrt a) (sqrt (1-a))
     in 6367000 * c;
 
+-- | Computes a rough approximation of a bounding box around a given
+-- GPSPosition.
+gpsBoundingBox :: GPSPosition -> Double -> (GPSPosition, GPSPosition)
+gpsBoundingBox pos dist =
+   let latOffset = dist / 110574
+       lonOffset = dist / (111320 * cos(gpsLatitude pos))
+   in (pos {gpsLatitude = gpsLatitude pos + latOffset, gpsLongitude = gpsLongitude pos + lonOffset},
+       pos {gpsLatitude = gpsLatitude pos - latOffset, gpsLongitude = gpsLongitude pos - lonOffset})
+
 -- | Takes care of regularly reloading a POI database.
-databaseUpdateThread :: String -> GPSContext -> Double -> TVar [POI] -> IO ()
-databaseUpdateThread filename ctx distance tv = forever $ do
+databaseUpdateThread :: DBType -> GPSContext -> Double -> TVar [POI] -> IO ()
+databaseUpdateThread db ctx distance tv = forever $ do
    curPos <- pos ctx
-   result <- try $ scanDatabase filename curPos distance tv :: IO (Either SomeException ())
+   result <- try $ scanDB db curPos distance tv :: IO (Either SomeException ())
    case result of
       Left err -> hPutStrLn stderr $ show err
       Right _  -> return ()
    threadDelay $ 1000000 * 60 -- Updating once a minute is enough.
+   where scanDB (CSV filename) curPos distance tv = 
+            scanDatabase filename curPos distance tv
+         scanDB (SQLITE3 filename fields) curPos distance tv = 
+            scanDatabaseSqlite filename curPos distance tv fields
 
 -- | Scans an IGO8 database and appends all POIs found to a list of POIs in 
 -- a TVar.
@@ -109,6 +123,27 @@ scanDatabase filename curpos distance tv = do
                                                    then return ()
                                                    else writeTVar tv (p:lst)
    hClose handle
+
+-- | The representation of a POI in a SQLITE3 database
+instance FromRow POI where
+   fromRow = mkPOI <$> (GPSPosition <$> field <*> field) <*> field
+
+-- | Scans a SQLITE database and appends all POIs found to a list of POIs in
+-- a TVar.
+scanDatabaseSqlite :: String -> GPSPosition -> Double -> TVar [POI] -> (String, String, String, String) -> IO ()
+scanDatabaseSqlite filename curpos distance tv (tblName, latField, lonField, typeField) = do
+  conn <- open filename
+  let (small, big) = gpsBoundingBox curpos distance
+  let minLat = gpsLatitude small
+  let minLon = gpsLongitude small
+  let maxLat = gpsLatitude big
+  let maxLon = gpsLongitude big
+  let q = "SELECT " ++ lonField ++ ", " ++ latField ++ ", " ++ typeField ++ 
+          " FROM " ++ tblName ++ " WHERE " ++ latField ++ " BETWEEN " ++ 
+          (show minLat) ++ " AND " ++ (show maxLat) ++ " AND " ++ lonField ++ 
+          " BETWEEN " ++ show (minLon) ++ " AND " ++ (show maxLon)
+  r <- query_ conn (read q) :: IO [POI]
+  atomically $ modifyTVar tv $ (flip union) r
 
 -- | Generates a POI if the object is within the provided distance
 processEntry ::    GPSPosition 
@@ -190,6 +225,24 @@ outputWarning poi distance commandTemplate = do
    _ <- try $ system cmd :: IO (Either SomeException ExitCode)
    return ()
 
+data DBType = CSV String | SQLITE3 String (String, String, String, String) 
+              deriving (Show)
+
+-- | Splits a list
+splitWhen :: (a -> Bool) -> [a] -> [[a]]
+splitWhen p [] = [[]]
+splitWhen p l  = filter ((/=0) . length) . uncurry (:) . fmap (splitWhen p . drop 1) . break p $ l
+
+-- | Parses a database description into a DBType
+parseDBDescr :: String -> DBType
+parseDBDescr fn = 
+   let params = splitWhen (== ':') fn
+   in if length params == 1
+         then CSV fn
+         else if length params /= 5
+                 then error "Syntax error in SQLITE3 database description."
+                 else SQLITE3 (params !! 0) (params !! 1, params !! 2, params !! 3, params !! 4)
+
 main :: IO ()
 main = do
    args <- getArgs
@@ -199,10 +252,13 @@ main = do
       hPutStrLn stderr "Any occurrence of %d is replaced by the distance to the POI"
       hPutStrLn stderr "and %s is replaced by the description of the POI."
       hPutStrLn stderr "Example: POIWarner 127.0.0.1 2947 'echo POI %s in %d' poi1.csv poi2.csv"
+      hPutStrLn stderr "Instead of the .csv file you can also use a sqlite3 database. In this"
+      hPutStrLn stderr "supply 'db.sqlite3:tablename:latitudeField:longitudeField:poiTypeField'"
+      hPutStrLn stderr "as database file name."
       exitFailure
    gps <- initGps (args !! 0) (read $ args !! 1)
    waitForFix gps
    tv <- newTVarIO []
    forM_ (drop 3 args) $ \filename -> do
-      forkIO $ databaseUpdateThread filename gps radiusHotPOIs tv
+      forkIO $ databaseUpdateThread (parseDBDescr filename) gps radiusHotPOIs tv
    poiWarnerThread tv gps radiusHotPOIs (args !! 2)
