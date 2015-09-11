@@ -84,8 +84,8 @@ gpsBoundingBox :: GPSPosition -> Double -> (GPSPosition, GPSPosition)
 gpsBoundingBox pos dist =
    let latOffset = dist / 110574
        lonOffset = dist / (111320 * cos(gpsLatitude pos))
-   in (pos {gpsLatitude = gpsLatitude pos + latOffset, gpsLongitude = gpsLongitude pos + lonOffset},
-       pos {gpsLatitude = gpsLatitude pos - latOffset, gpsLongitude = gpsLongitude pos - lonOffset})
+   in (pos {gpsLatitude = gpsLatitude pos - latOffset, gpsLongitude = gpsLongitude pos - lonOffset},
+       pos {gpsLatitude = gpsLatitude pos + latOffset, gpsLongitude = gpsLongitude pos + lonOffset})
 
 -- | Takes care of regularly reloading a POI database.
 databaseUpdateThread :: DBType -> GPSContext -> Double -> TVar [POI] -> IO ()
@@ -130,19 +130,21 @@ instance FromRow POI where
 
 -- | Scans a SQLITE database and appends all POIs found to a list of POIs in
 -- a TVar.
-scanDatabaseSqlite :: String -> GPSPosition -> Double -> TVar [POI] -> (String, String, String, String) -> IO ()
-scanDatabaseSqlite filename curpos distance tv (tblName, latField, lonField, typeField) = do
+scanDatabaseSqlite :: String -> GPSPosition -> Double -> TVar [POI] -> (String, String, String, String, Maybe String) -> IO ()
+scanDatabaseSqlite filename curpos distance tv (tblName, latField, lonField, typeField, mwc) = do
   conn <- open filename
   let (small, big) = gpsBoundingBox curpos distance
   let minLat = gpsLatitude small
   let minLon = gpsLongitude small
   let maxLat = gpsLatitude big
   let maxLon = gpsLongitude big
+  let whereClause = maybe "" (\x -> " AND (" ++ x ++ ")") mwc
   let q = "SELECT " ++ lonField ++ ", " ++ latField ++ ", " ++ typeField ++ 
           " FROM " ++ tblName ++ " WHERE " ++ latField ++ " BETWEEN " ++ 
           (show minLat) ++ " AND " ++ (show maxLat) ++ " AND " ++ lonField ++ 
-          " BETWEEN " ++ show (minLon) ++ " AND " ++ (show maxLon)
-  r <- query_ conn (read q) :: IO [POI]
+          " BETWEEN " ++ show (minLon) ++ " AND " ++ (show maxLon) ++ whereClause
+  r <- query_ conn (read $ show q) :: IO [POI]
+  close conn
   atomically $ modifyTVar tv $ (flip union) r
 
 -- | Generates a POI if the object is within the provided distance
@@ -225,7 +227,7 @@ outputWarning poi distance commandTemplate = do
    _ <- try $ system cmd :: IO (Either SomeException ExitCode)
    return ()
 
-data DBType = CSV String | SQLITE3 String (String, String, String, String) 
+data DBType = CSV String | SQLITE3 String (String, String, String, String, Maybe String) 
               deriving (Show)
 
 -- | Splits a list
@@ -235,13 +237,12 @@ splitWhen p l  = filter ((/=0) . length) . uncurry (:) . fmap (splitWhen p . dro
 
 -- | Parses a database description into a DBType
 parseDBDescr :: String -> DBType
-parseDBDescr fn = 
-   let params = splitWhen (== ':') fn
-   in if length params == 1
-         then CSV fn
-         else if length params /= 5
-                 then error "Syntax error in SQLITE3 database description."
-                 else SQLITE3 (params !! 0) (params !! 1, params !! 2, params !! 3, params !! 4)
+parseDBDescr fn 
+      | length params == 1 = CSV fn
+      | length params == 5 = SQLITE3 (params !! 0) (params !! 1, params !! 2, params !! 3, params !! 4, Nothing)
+      | length params == 6 = SQLITE3 (params !! 0) (params !! 1, params !! 2, params !! 3, params !! 4, Just $ params !! 5)
+      | otherwise = error "Cannot parse database description."
+      where params = splitWhen (== ':') fn
 
 main :: IO ()
 main = do
@@ -254,6 +255,7 @@ main = do
       hPutStrLn stderr "Example: POIWarner 127.0.0.1 2947 'echo POI %s in %d' poi1.csv poi2.csv"
       hPutStrLn stderr "Instead of the .csv file you can also use a sqlite3 database. In this"
       hPutStrLn stderr "supply 'db.sqlite3:tablename:latitudeField:longitudeField:poiTypeField'"
+      hPutStrLn stderr "or 'db.sqlite3:tbl:lat:lon:poiTypeField:additionalWhereClause'"
       hPutStrLn stderr "as database file name."
       exitFailure
    gps <- initGps (args !! 0) (read $ args !! 1)
