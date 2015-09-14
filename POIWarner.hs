@@ -31,6 +31,20 @@ import           System.Cmd
 import           Data.String.Utils
 import           Control.Exception
 import           Database.SQLite.Simple
+import           System.Log.Logger
+import           System.Log.Handler.Syslog
+import           System.Log.Handler.Simple
+import           System.Log.Formatter
+import           System.Log.Handler (setFormatter)
+
+myName :: String
+myName = "HsPOI"
+
+debug :: String -> IO ()
+debug = debugM myName
+
+warning :: String -> IO ()
+warning = warningM myName
 
 -- | A POI
 data POI = POI {
@@ -90,10 +104,11 @@ gpsBoundingBox pos dist =
 -- | Takes care of regularly reloading a POI database.
 databaseUpdateThread :: DBType -> GPSContext -> Double -> TVar [POI] -> IO ()
 databaseUpdateThread db ctx distance tv = forever $ do
+   debug "Updating the database."
    curPos <- pos ctx
    result <- try $ scanDB db curPos distance tv :: IO (Either SomeException ())
    case result of
-      Left err -> hPutStrLn stderr $ show err
+      Left err -> warning $ "Database scan failed: " ++ show err
       Right _  -> return ()
    threadDelay $ 1000000 * 60 -- Updating once a minute is enough.
    where scanDB (CSV filename) curPos distance tv = 
@@ -143,7 +158,9 @@ scanDatabaseSqlite filename curpos distance tv (tblName, latField, lonField, typ
           " FROM " ++ tblName ++ " WHERE " ++ latField ++ " BETWEEN " ++ 
           (show minLat) ++ " AND " ++ (show maxLat) ++ " AND " ++ lonField ++ 
           " BETWEEN " ++ show (minLon) ++ " AND " ++ (show maxLon) ++ whereClause
+  debug $ "SQLite query: " ++ (show q)
   r <- query_ conn (read $ show q) :: IO [POI]
+  debug $ "Got " ++ (show $ length r) ++ " rows."
   close conn
   atomically $ modifyTVar tv $ (flip union) r
 
@@ -175,12 +192,15 @@ sortPOIs curPos =
 poiWarnerThread :: TVar [POI] -> GPSContext -> Double -> String -> IO ()
 poiWarnerThread tv ctx radiusHot commandTemplate = forever $ do
    curPos <- pos ctx
+   debug $ "Current GPS position: " ++ show curPos
    next   <- atomically $ do
       modifyTVar tv (sortPOIs curPos . updateHotPOIs curPos radiusHot)
       lst <- readTVar tv
       return $ takeWhile ((<= 1000) . gpsDistance curPos . poiPosition) lst
    forM_ next $ \poi -> do
+      debug $ "Processing POI " ++ show poi
       newPOI <- handleOnePOI ctx poi commandTemplate
+      debug $ "After processing we have " ++ show newPOI
       changeOne tv newPOI
    threadDelay $ 1000000
    where changeOne tv poi = atomically $ modifyTVar tv (\l -> poi:(filter (/=poi) l))
@@ -193,7 +213,9 @@ handleOnePOI ctx poi commandTemplate = do
    let newPoi = poi { poiLastDistance = distance }
    if (poiLastDistance poi) >= distance
       then announce newPoi ctx commandTemplate
-      else return newPoi { poiAnnouncedAt = round distance }
+      else do debug $ "Driving away from POI " ++ (show newPoi) ++ 
+                      ". New distance is " ++ show (round distance)
+              return newPoi { poiAnnouncedAt = round distance }
 
 -- | Checks the last distance of a POI and announces it if needed.
 announce :: POI -> GPSContext -> String -> IO POI
@@ -215,16 +237,22 @@ announce poi ctx commandTemplate = do
 doAnnouncement :: POI -> Int -> String -> IO POI
 doAnnouncement poi announceDist commandTemplate = 
    if poiAnnouncedAt poi > announceDist
-      then do outputWarning poi announceDist commandTemplate
+      then do debug $ "Will announce POI " ++ (show poi) ++ " now."
+              outputWarning poi announceDist commandTemplate
               return poi { poiAnnouncedAt = announceDist }
-      else return poi
+      else do debug $ "Skipping double announcement of POI " ++ show poi
+              return poi
 
 -- | Performs the necessary IO for issuing a POI warning
 outputWarning :: POI -> Int -> String -> IO ()
 outputWarning poi distance commandTemplate = do
    let cmd' = replace "%d" (show distance) commandTemplate 
        cmd  = replace "%s" (poiDescription poi) cmd'
-   _ <- try $ system cmd :: IO (Either SomeException ExitCode)
+   debug $ "Launching command " ++ cmd
+   result <- try $ system cmd :: IO (Either SomeException ExitCode)
+   case result of
+      Left err -> warning $ "Couldn't launch command. It failed with " ++ show err
+      Right ex -> debug $ "Command exited with exit code " ++ show ex
    return ()
 
 data DBType = CSV String | SQLITE3 String (String, String, String, String, Maybe String) 
@@ -246,9 +274,16 @@ parseDBDescr fn
 
 main :: IO ()
 main = do
-   args <- getArgs
+   myStreamHandler <- streamHandler stderr DEBUG
+   let handler = setFormatter myStreamHandler $ simpleLogFormatter "[$time : $loggername : $prio] $msg"
+   updateGlobalLogger rootLoggerName (setHandlers [handler])
+   args' <- getArgs
+   args <- if (length args' > 0) && args' !! 0 == "debug"
+              then do updateGlobalLogger myName (setLevel DEBUG)
+                      return $ tail args'
+              else return args'
    when (length args < 4) $ do
-      hPutStrLn stderr "Usage: POIWarner gpsd_host gpsd_port warn_command database1 ..."
+      hPutStrLn stderr "Usage: POIWarner [debug] gpsd_host gpsd_port warn_command database1 ..."
       hPutStrLn stderr "When you approach a POI, warn_command is passed to the shell."
       hPutStrLn stderr "Any occurrence of %d is replaced by the distance to the POI"
       hPutStrLn stderr "and %s is replaced by the description of the POI."
