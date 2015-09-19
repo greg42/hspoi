@@ -97,7 +97,7 @@ gpsDistance pos1 pos2 =
 gpsBoundingBox :: GPSPosition -> Double -> (GPSPosition, GPSPosition)
 gpsBoundingBox pos dist =
    let latOffset = dist / 110574
-       lonOffset = dist / (111320 * cos(gpsLatitude pos))
+       lonOffset = dist / abs (111320 * cos((gpsLatitude pos) * (pi/180)))
    in (pos {gpsLatitude = gpsLatitude pos - latOffset, gpsLongitude = gpsLongitude pos - lonOffset},
        pos {gpsLatitude = gpsLatitude pos + latOffset, gpsLongitude = gpsLongitude pos + lonOffset})
 
